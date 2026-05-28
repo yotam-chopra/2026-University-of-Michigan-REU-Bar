@@ -1,338 +1,262 @@
 import math
-import os
-from itertools import product
+import itertools
+import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from sympy import factorint
 
 
-def factorization(n):
+n = int(input("Enter n: "))
+mods = list(map(int, input("Enter subset mods separated by spaces: ").split()))
 
-    fac = {}
+f = factorint(n)
 
-    d = 2
+prime_list = []
 
-    while d * d <= n:
+for p, e in sorted(f.items()):
+    for _ in range(e):
+        prime_list.append(p)
 
-        while n % d == 0:
+if len(prime_list) < 2:
+    raise ValueError("Need at least two prime factors")
 
-            fac[d] = fac.get(d, 0) + 1
+rows = prime_list[0]
+cols = prime_list[1]
 
-            n //= d
+layer_dims = prime_list[2:]
 
-        d += 1
+layers = 1
+for d in layer_dims:
+    layers *= d
 
-    if n > 1:
-        fac[n] = fac.get(n, 0) + 1
+all_layers = []
 
-    return fac
+count = 0
+
+for L in range(layers):
+    grid = np.zeros((rows, cols), dtype=int)
+
+    for r in range(rows):
+        for c in range(cols):
+            grid[r, c] = count
+            count += 1
+
+    all_layers.append(grid)
+
+coverage = np.zeros((layers, rows, cols), dtype=int)
+
+colors = {
+    0: "lightgray",
+    1: "#ff6666",
+    2: "#66cc66",
+    3: "#6699ff",
+    4: "#ffcc33",
+    5: "#bb66cc",
+    6: "#66dddd",
+    7: "#ff99aa",
+    8: "#ffaa44"
+}
 
 
-def crt_coordinates(n, prime_powers):
+def layer_coords(L):
+    coords = []
 
-    coords = {}
+    x = L
 
-    for x in range(n):
+    for d in reversed(layer_dims):
+        coords.append(x % d)
+        x //= d
 
-        coords[x] = tuple(
-            x % pp
-            for pp in prime_powers
-        )
+    coords.reverse()
 
     return coords
 
 
-def build_multibox_grid(n):
+def coords_to_layer(coords):
+    x = 0
 
-    fac = factorization(n)
+    for i in range(len(coords)):
+        x *= layer_dims[i]
+        x += coords[i]
 
-    prime_powers = [
-        p ** e
-        for p, e in fac.items()
-    ]
+    return x
 
-    coords = crt_coordinates(n, prime_powers)
 
-    if len(prime_powers) == 1:
+def canonical_pattern(m):
+    mf = factorint(m)
 
-        layers = 1
-        rows = 1
-        cols = prime_powers[0]
+    active = []
 
-    elif len(prime_powers) == 2:
+    for p, e in mf.items():
+        active += [p] * e
 
-        layers = 1
-        rows = prime_powers[0]
-        cols = prime_powers[1]
+    active = sorted(active)
 
-    else:
+    use_row = False
+    use_col = False
 
-        layers = prime_powers[2]
+    use_layers = [False] * len(layer_dims)
 
-        rows = prime_powers[0]
-        cols = prime_powers[1]
+    ptr = 0
 
-    grids = []
+    if ptr < len(active) and active[ptr] == rows:
+        use_row = True
+        ptr += 1
 
-    for _ in range(layers):
+    if ptr < len(active) and active[ptr] == cols:
+        use_col = True
+        ptr += 1
 
-        grids.append([
-            [None for _ in range(cols)]
-            for _ in range(rows)
-        ])
+    for i, d in enumerate(layer_dims):
+        if ptr < len(active) and active[ptr] == d:
+            use_layers[i] = True
+            ptr += 1
 
-    for x in range(n):
+    return use_row, use_col, use_layers
 
-        c = coords[x]
 
-        if len(prime_powers) == 1:
+def generate_all_translations(m):
+    use_row, use_col, use_layers = canonical_pattern(m)
 
-            layer = 0
-            row = 0
-            col = c[0]
+    row_choices = [0]
+    col_choices = [cols - 1]
 
-        elif len(prime_powers) == 2:
+    layer_choices = []
 
-            layer = 0
-            row = c[0]
-            col = c[1]
+    if use_row:
+        row_choices = list(range(rows))
 
+    if use_col:
+        col_choices = list(range(cols))
+
+    for i, d in enumerate(layer_dims):
+        if use_layers[i]:
+            layer_choices.append(list(range(d)))
         else:
+            layer_choices.append([None])
 
-            row = c[0]
-            col = c[1]
-            layer = c[2]
+    all_regions = []
 
-        grids[layer][row][col] = x
+    for rpick in row_choices:
+        for cpick in col_choices:
+            for lpicks in itertools.product(*layer_choices):
 
-    return grids
+                region = set()
+
+                for L in range(layers):
+                    lc = layer_coords(L)
+
+                    ok_layer = True
+
+                    for i in range(len(layer_dims)):
+                        if use_layers[i]:
+                            if lc[i] != lpicks[i]:
+                                ok_layer = False
+                                break
+
+                    if not ok_layer:
+                        continue
+
+                    for r in range(rows):
+                        for c in range(cols):
+
+                            ok = True
+
+                            if use_row and r != rpick:
+                                ok = False
+
+                            if use_col and c != cpick:
+                                ok = False
+
+                            if ok:
+                                region.add((L, r, c))
+
+                all_regions.append(region)
+
+    return all_regions
 
 
-def deletion_condition(x, deletions):
+mods_sorted = sorted(mods)
 
-    for modulus, residue in deletions:
+placed_regions = {}
 
-        if x % modulus == residue % modulus:
-            return True
+for idx, m in enumerate(mods_sorted):
+    patterns = generate_all_translations(m)
 
-    return False
+    best_pattern = None
+    best_gain = -1
+
+    for pat in patterns:
+        gain = 0
+
+        for (L, r, c) in pat:
+            if coverage[L, r, c] == 0:
+                gain += 1
+
+        if gain > best_gain:
+            best_gain = gain
+            best_pattern = pat
+
+    placed_regions[m] = best_pattern
+
+    for (L, r, c) in best_pattern:
+        coverage[L, r, c] = idx + 1
 
 
-def draw_layer(
-    ax,
-    grid,
-    deletions,
-    title=""
-):
+grid_cols = math.ceil(math.sqrt(layers))
+grid_rows = math.ceil(layers / grid_cols)
 
-    rows = len(grid)
-    cols = len(grid[0])
+fig, axes = plt.subplots(
+    grid_rows,
+    grid_cols,
+    figsize=(4 * grid_cols, 4 * grid_rows)
+)
+
+axes = np.array(axes).reshape(-1)
+
+fig.suptitle(
+    f"Greedy CRT packing for n={n}, mods={mods}",
+    fontsize=18
+)
+
+for idx, ax in enumerate(axes):
+    if idx >= layers:
+        ax.axis("off")
+        continue
+
+    grid = all_layers[idx]
 
     for r in range(rows):
         for c in range(cols):
+            val = coverage[idx, r, c]
 
-            x = grid[r][c]
-
-            color = "lightgray"
-
-            if deletion_condition(x, deletions):
-                color = "lightcoral"
-
-            rect = Rectangle(
-                (c, rows - r - 1),
+            rect = plt.Rectangle(
+                (c, rows - 1 - r),
                 1,
                 1,
-                facecolor=color,
-                edgecolor="black",
-                linewidth=1
+                facecolor=colors[val],
+                edgecolor="black"
             )
 
             ax.add_patch(rect)
 
             ax.text(
                 c + 0.5,
-                rows - r - 0.5,
-                str(x),
+                rows - 1 - r + 0.5,
+                str(grid[r, c]),
                 ha="center",
                 va="center",
-                fontsize=8
+                fontsize=6
             )
 
     ax.set_xlim(0, cols)
     ax.set_ylim(0, rows)
 
-    ax.set_xticks(range(cols))
-    ax.set_yticks(range(rows))
+    ax.set_xticks(range(cols + 1))
+    ax.set_yticks(range(rows + 1))
+
+    ax.set_title(f"Layer {idx}", fontsize=9)
 
     ax.set_aspect("equal")
 
-    ax.set_title(title)
-
-
-def generate_diagrams(
-    n,
-    irreducibles
-):
-
-    folder_name = (
-        f"CRT_n_{n}_irr_" +
-        "_".join(map(str, irreducibles))
-    )
-
-    os.makedirs(folder_name, exist_ok=True)
-
-    grids = build_multibox_grid(n)
-
-    max_per_row = 5
-
-    num_layers = len(grids)
-
-    num_rows = math.ceil(num_layers / max_per_row)
-
-    num_cols = min(max_per_row, num_layers)
-
-    # --------------------------------------------------------
-    # Individual irreducible diagrams
-    # --------------------------------------------------------
-
-    for irr in irreducibles:
-
-        fig, axs = plt.subplots(
-            num_rows,
-            num_cols,
-            figsize=(4 * num_cols, 4 * num_rows)
-        )
-
-        if num_rows == 1 and num_cols == 1:
-            axs = [[axs]]
-
-        elif num_rows == 1:
-            axs = [axs]
-
-        elif num_cols == 1:
-            axs = [[a] for a in axs]
-
-        axs_flat = [
-            ax
-            for row in axs
-            for ax in row
-        ]
-
-        for i, grid in enumerate(grids):
-
-            draw_layer(
-                axs_flat[i],
-                grid,
-                deletions=[(irr, 0)],
-                title=f"Layer {i}"
-            )
-
-        for j in range(len(grids), len(axs_flat)):
-            axs_flat[j].axis("off")
-
-        plt.suptitle(
-            f"Delete class mod {irr}",
-            fontsize=18
-        )
-
-        plt.tight_layout()
-
-        filename = os.path.join(
-            folder_name,
-            f"mod_{irr}.png"
-        )
-
-        plt.savefig(
-            filename,
-            dpi=300,
-            bbox_inches="tight"
-        )
-
-        plt.close()
-
-        print(f"Saved {filename}")
-
-    # --------------------------------------------------------
-    # Full transfer system
-    # --------------------------------------------------------
-
-    fig, axs = plt.subplots(
-        num_rows,
-        num_cols,
-        figsize=(4 * num_cols, 4 * num_rows)
-    )
-
-    if num_rows == 1 and num_cols == 1:
-        axs = [[axs]]
-
-    elif num_rows == 1:
-        axs = [axs]
-
-    elif num_cols == 1:
-        axs = [[a] for a in axs]
-
-    axs_flat = [
-        ax
-        for row in axs
-        for ax in row
-    ]
-
-    deletions = [
-        (irr, 0)
-        for irr in irreducibles
-    ]
-
-    for i, grid in enumerate(grids):
-
-        draw_layer(
-            axs_flat[i],
-            grid,
-            deletions=deletions,
-            title=f"Layer {i}"
-        )
-
-    for j in range(len(grids), len(axs_flat)):
-        axs_flat[j].axis("off")
-
-    plt.suptitle(
-        "Full Transfer System",
-        fontsize=18
-    )
-
-    plt.tight_layout()
-
-    filename = os.path.join(
-        folder_name,
-        "full_transfer_system.png"
-    )
-
-    plt.savefig(
-        filename,
-        dpi=300,
-        bbox_inches="tight"
-    )
-
-    plt.close()
-
-    print(f"Saved {filename}")
-
-
-if __name__ == "__main__":
-
-    n = int(input("Enter n: "))
-
-    print()
-    print("Enter irreducible cofibrants.")
-    print("Example: 2 11 33")
-    print()
-
-    irreducibles = list(
-        map(
-            int,
-            input("Irreducibles: ").split()
-        )
-    )
-
-    generate_diagrams(
-        n,
-        irreducibles
-    )
+plt.tight_layout()
+plt.show()
